@@ -7,7 +7,7 @@
 	<bean id="loaderConfig" class="com.hazelcast.demo.LoaderConfig">
 		<property name="dataDir" value="../data/taxi_log_2008_by_id"/>
 		<property name="parallelWriters" value="10"/>
-		<property name="replaySpeed" value="24" />
+		<property name="replaySpeed" value="48" />
 	</bean>
 
 </beans>

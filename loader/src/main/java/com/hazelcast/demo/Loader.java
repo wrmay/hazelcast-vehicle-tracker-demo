@@ -1,8 +1,12 @@
 package com.hazelcast.demo;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import javax.annotation.PreDestroy;
 
@@ -15,10 +19,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.ImportResource;
-import org.springframework.core.env.Environment;
 
 import com.hazelcast.client.HazelcastClient;
 import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
 
 /**
  * 
@@ -45,50 +49,92 @@ public class Loader implements CommandLineRunner
     }
     
     @Autowired
-    HazelcastInstance hz;
+    private HazelcastInstance hz;
     
     @Autowired
-    Environment environ;
+    private LoaderConfig config;
     
-    @Autowired
-    LoaderConfig config;
+    private ScheduledThreadPoolExecutor executor;
+    private Feeder []feeders;
+    
+    private long firstTimestamp;
+    private int fileCount;
+    
     
 	@Override
 	public void run(String... args) throws Exception {
 		try {
-			File dataDir = new File(config.getDataDir());
-			if (!dataDir.isDirectory())
-				throw new RuntimeException(String.format("\"%s\" does not exist or is not a directory.",config.getDataDir()));
+			IMap<Integer,Location> vehicleMap = hz.getMap("locations");
 			
-			ArrayList<File> files = new ArrayList<File>(10000);
-			long firstTimestamp = Long.MAX_VALUE;
-			int count = 0;
+			// create all of the feeders
+			feeders = new Feeder[config.getParallelWriters()];
+			for (int i=0;i<config.getParallelWriters();++i) feeders[i] = new Feeder();
 			
-			for(File f: dataDir.listFiles()) {
-				if (f.isFile() && f.getName().endsWith(".txt")) {
-					DataFile df = new DataFile(f);
-					try {
-						Location loc = df.next();
-						if (loc != null) {
-							count++;
-							if (loc.getTimestamp() < firstTimestamp) firstTimestamp = loc.getTimestamp();
-						}
-					} finally {
-						df.close();
-					}
-				}
+			initialScan();
+			log.info("There are {} data files and the earliest location datum is at {}", fileCount, new SimpleDateFormat(DataFile.DATE_FORMAT).format(firstTimestamp)); 
+			
+			// we don't know the start time until after the initial scan
+			// now that we know it, finish setting up the feeders
+			for(Feeder feeder: feeders) {
+				feeder.setTarget(vehicleMap);
+				feeder.setStartTime(firstTimestamp);
+				feeder.setStepSize(1000 * config.getReplaySpeed());
 			}
 			
-			log.info("There are {} data files and the earliest location datum is at {}", count, new SimpleDateFormat(DataFile.DATE_FORMAT).format(firstTimestamp)); 
+			
+			executor = new ScheduledThreadPoolExecutor(config.getParallelWriters());
+			for(Feeder feeder:feeders) executor.scheduleAtFixedRate(feeder, 0, 1, TimeUnit.SECONDS);
+			
+			
+			waitForEnter();
+			executor.shutdown();
+			
 			
 		} finally {
 			hz.shutdown();
 		}
 	}
+	
+	
     
 	@PreDestroy
 	public void shutdown() {
 		log.info("BYE");
 	}
     
+	
+	private void initialScan() throws IOException {
+		File dataDir = new File(config.getDataDir());
+		if (!dataDir.isDirectory())
+			throw new RuntimeException(String.format("\"%s\" does not exist or is not a directory.",config.getDataDir()));
+		
+		firstTimestamp = Long.MAX_VALUE;
+		fileCount = 0;
+		
+		
+		for(File f: dataDir.listFiles()) {
+			if (f.isFile() && f.getName().endsWith(".txt")) {
+				DataFile df = new DataFile(f);
+				Location loc = df.getFirst();
+				if (loc != null) {
+					fileCount++;
+					if (loc.getTimestamp() < firstTimestamp) firstTimestamp = loc.getTimestamp();
+				}
+				
+				// assign the file to a stripe
+				int stripe = Math.abs(f.getName().hashCode()) % config.getParallelWriters();
+				feeders[stripe].addDataFile(df);
+			}
+		}
+		
+	}
+	
+	private void waitForEnter() {
+		System.out.println("Press enter to stop.");
+		try (BufferedReader reader= new BufferedReader(new InputStreamReader(System.in))){
+			reader.readLine();
+		} catch(IOException x) {
+			// not a problem
+		}
+	}
 }

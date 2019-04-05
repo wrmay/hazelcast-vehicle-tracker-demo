@@ -29,5 +29,15 @@ in each area.  Additional summaries may be added later.
 # Feature Guide
 - Jet
 
+
+
+# To Do
+
+- is the hz map configured correctly ?
+- implement a different serialization scheme for locations
+- 
+
 # Enhancements
+
 - Drag a rectangle to display current location of cabs in a small area
+
